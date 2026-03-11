@@ -84,8 +84,10 @@ jobs:
         run: |
           mkdir -p ${{ runner.temp }}/digests/base
           mkdir -p ${{ runner.temp }}/digests/tmux
-          touch "${{ runner.temp }}/digests/base/${{ steps.build-base.outputs.digest }}"
-          touch "${{ runner.temp }}/digests/tmux/${{ steps.build-tmux.outputs.digest }}"
+          digest_base="${{ steps.build-base.outputs.digest }}"
+          digest_tmux="${{ steps.build-tmux.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/base/${digest_base#sha256:}"
+          touch "${{ runner.temp }}/digests/tmux/${digest_tmux#sha256:}"
 
       - name: Upload base digest
         uses: actions/upload-artifact@v6
