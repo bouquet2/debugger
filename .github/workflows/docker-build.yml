@@ -7,13 +7,11 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "0 13 * * 1"
-  
+
 env:
-  USERNAME: "kreatoo"
-  REPO: "test-project"
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
-  REGISTRY_IMAGE: ghcr.io/${{ github.repository }}
+  IMAGE_BASE: ghcr.io/${{ github.repository }}
+  IMAGE_TMUX: ghcr.io/${{ github.repository }}-tmux
 
 jobs:
   build:
@@ -21,8 +19,6 @@ jobs:
       contents: read
       packages: write
     runs-on: ${{ matrix.runs-on }}
-    outputs:
-      latest_tag: ${{ steps.latest_tag.outputs.tag }}
     strategy:
       fail-fast: false
       matrix:
@@ -32,40 +28,27 @@ jobs:
           - runs-on: ubuntu-24.04-arm
             platform: linux/arm64
     steps:
-      - name: Checkout current repository
+      - name: Checkout
         uses: actions/checkout@v5
-
-      - name: Get latest tag
-        id: latest_tag
-        run: |
-          TAG=$(curl -s https://api.github.com/repos/${{ env.USERNAME }}/${{ env.REPO }}/tags | jq -r '.[0].name')
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "LATEST_TAG=${TAG}" >> $GITHUB_ENV
-     
-      - name: Checkout repository
-        uses: actions/checkout@v5
-        with:
-          repository: ${{ env.USERNAME }}/${{ env.REPO }}
-          ref: ${{ env.LATEST_TAG }}
-          path: ${{ env.REPO }}
-
-
-      - name: Use Dockerfile in repo
-        run: |
-          cp Dockerfile ${{ env.REPO }}/Dockerfile
 
       - name: Prepare
         run: |
           platform=${{ matrix.platform }}
           echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
 
-      - name: Docker meta
-        id: meta
+      - name: Docker meta (base)
+        id: meta-base
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY_IMAGE }}
+          images: ${{ env.IMAGE_BASE }}
 
-      - name: Login to Docker Hub
+      - name: Docker meta (tmux)
+        id: meta-tmux
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_TMUX }}
+
+      - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -75,27 +58,48 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push by digest
-        id: build
+      - name: Build and push base image (digest)
+        id: build-base
         uses: docker/build-push-action@v6
         with:
-          context: ${{ env.REPO }}
+          context: .
+          target: base
           platforms: ${{ matrix.platform }}
-          labels: ${{ steps.meta.outputs.labels }}
-          tags: ${{ env.REGISTRY_IMAGE }}
+          labels: ${{ steps.meta-base.outputs.labels }}
+          tags: ${{ env.IMAGE_BASE }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
 
-      - name: Export digest
-        run: |
-          mkdir -p ${{ runner.temp }}/digests
-          digest="${{ steps.build.outputs.digest }}"
-          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+      - name: Build and push tmux image (digest)
+        id: build-tmux
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: tmux
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta-tmux.outputs.labels }}
+          tags: ${{ env.IMAGE_TMUX }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
 
-      - name: Upload digest
+      - name: Export digests
+        run: |
+          mkdir -p ${{ runner.temp }}/digests/base
+          mkdir -p ${{ runner.temp }}/digests/tmux
+          touch "${{ runner.temp }}/digests/base/${{ steps.build-base.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/tmux/${{ steps.build-tmux.outputs.digest }}"
+
+      - name: Upload base digest
         uses: actions/upload-artifact@v6
         with:
-          name: digests-${{ env.PLATFORM_PAIR }}
-          path: ${{ runner.temp }}/digests/*
+          name: digests-base-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/base/*
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload tmux digest
+        uses: actions/upload-artifact@v6
+        with:
+          name: digests-tmux-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/tmux/*
           if-no-files-found: error
           retention-days: 1
 
@@ -106,17 +110,22 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - build
-    env:
-      LATEST_TAG: ${{ needs.build.outputs.latest_tag }}
     steps:
-      - name: Download digests
+      - name: Download base digests
         uses: actions/download-artifact@v7
         with:
-          path: ${{ runner.temp }}/digests
-          pattern: digests-*
+          path: ${{ runner.temp }}/digests/base
+          pattern: digests-base-*
           merge-multiple: true
 
-      - name: Login to Docker Hub
+      - name: Download tmux digests
+        uses: actions/download-artifact@v7
+        with:
+          path: ${{ runner.temp }}/digests/tmux
+          pattern: digests-tmux-*
+          merge-multiple: true
+
+      - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -126,42 +135,36 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Docker meta
-        id: meta
+      - name: Docker meta (base)
+        id: meta-base
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY_IMAGE }}
+          images: ${{ env.IMAGE_BASE }}
           tags: |
             type=raw,value=latest,enable=true
-            type=raw,value=${{ env.LATEST_TAG }},enable=true
 
-      - name: Create manifest list and push
-        working-directory: ${{ runner.temp }}/digests
+      - name: Docker meta (tmux)
+        id: meta-tmux
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_TMUX }}
+          tags: |
+            type=raw,value=latest,enable=true
+
+      - name: Create base manifest
+        working-directory: ${{ runner.temp }}/digests/base
         run: |
           docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
+            $(printf '${{ env.IMAGE_BASE }}@sha256:%s ' *)
 
-      - name: Inspect image
+      - name: Create tmux manifest
+        working-directory: ${{ runner.temp }}/digests/tmux
         run: |
-          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:latest
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.IMAGE_TMUX }}@sha256:%s ' *)
 
-  create-release:
-    needs: [build, merge]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      LATEST_TAG: ${{ needs.build.outputs.latest_tag }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-      
-      - name: Create and push tag
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git tag ${{ env.LATEST_TAG }} || true 
-          git push origin ${{ env.LATEST_TAG }} || true
-          gh release create ${{ env.LATEST_TAG }} --generate-notes || true
+      - name: Inspect base image
+        run: docker buildx imagetools inspect ${{ env.IMAGE_BASE }}:latest
+
+      - name: Inspect tmux image
+        run: docker buildx imagetools inspect ${{ env.IMAGE_TMUX }}:latest
