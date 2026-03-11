@@ -51,6 +51,7 @@ A comprehensive Kubernetes debugging container based on Fedora, designed for tro
 
 ### Other
 - **git**, **git-lfs** - Version control
+- **sops** - Secrets encryption/decryption
 
 ## Usage
 

@@ -83,6 +83,15 @@ RUN MONGOSH_VERSION=$(curl -s https://api.github.com/repos/mongodb-js/mongosh/re
     chmod +x /usr/local/bin/mongosh && \
     rm -rf /tmp/mongosh*
 
+RUN SOPS_VERSION=$(curl -s https://api.github.com/repos/getsops/sops/releases/latest | jq -r '.tag_name') && \
+    ARCH=$(uname -m) && \
+    case $ARCH in \
+        x86_64) ARCH="amd64" ;; \
+        aarch64) ARCH="arm64" ;; \
+    esac && \
+    curl -Lo /usr/local/bin/sops "https://github.com/getsops/sops/releases/download/${SOPS_VERSION}/sops-${SOPS_VERSION}.linux.${ARCH}" && \
+    chmod +x /usr/local/bin/sops
+
 RUN useradd -m -s /bin/bash debugger && \
     mkdir -p /home/debugger/.kube /home/debugger/.config/helm && \
     chown -R debugger:debugger /home/debugger
