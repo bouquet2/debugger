@@ -10,8 +10,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_BASE: ghcr.io/${{ github.repository }}
-  IMAGE_TMUX: ghcr.io/${{ github.repository }}-tmux
 
 jobs:
   build:
@@ -23,9 +21,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runs-on: ubuntu-latest
+          - target: base
+            runs-on: ubuntu-latest
             platform: linux/amd64
-          - runs-on: ubuntu-24.04-arm
+          - target: base
+            runs-on: ubuntu-24.04-arm
+            platform: linux/arm64
+          - target: tmux
+            runs-on: ubuntu-latest
+            platform: linux/amd64
+          - target: tmux
+            runs-on: ubuntu-24.04-arm
             platform: linux/arm64
     steps:
       - name: Checkout
@@ -36,17 +42,19 @@ jobs:
           platform=${{ matrix.platform }}
           echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
 
-      - name: Docker meta (base)
-        id: meta-base
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_BASE }}
+      - name: Set image name
+        run: |
+          if [ "${{ matrix.target }}" = "tmux" ]; then
+            echo "IMAGE_NAME=ghcr.io/${{ github.repository }}-tmux" >> $GITHUB_ENV
+          else
+            echo "IMAGE_NAME=ghcr.io/${{ github.repository }}" >> $GITHUB_ENV
+          fi
 
-      - name: Docker meta (tmux)
-        id: meta-tmux
+      - name: Docker meta
+        id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE_TMUX }}
+          images: ${{ env.IMAGE_NAME }}
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -58,50 +66,28 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push base image (digest)
-        id: build-base
+      - name: Build and push (digest)
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          target: base
+          target: ${{ matrix.target }}
           platforms: ${{ matrix.platform }}
-          labels: ${{ steps.meta-base.outputs.labels }}
-          tags: ${{ env.IMAGE_BASE }}
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ env.IMAGE_NAME }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
 
-      - name: Build and push tmux image (digest)
-        id: build-tmux
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          target: tmux
-          platforms: ${{ matrix.platform }}
-          labels: ${{ steps.meta-tmux.outputs.labels }}
-          tags: ${{ env.IMAGE_TMUX }}
-          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
-
-      - name: Export digests
+      - name: Export digest
         run: |
-          mkdir -p ${{ runner.temp }}/digests/base
-          mkdir -p ${{ runner.temp }}/digests/tmux
-          digest_base="${{ steps.build-base.outputs.digest }}"
-          digest_tmux="${{ steps.build-tmux.outputs.digest }}"
-          touch "${{ runner.temp }}/digests/base/${digest_base#sha256:}"
-          touch "${{ runner.temp }}/digests/tmux/${digest_tmux#sha256:}"
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
 
-      - name: Upload base digest
+      - name: Upload digest
         uses: actions/upload-artifact@v6
         with:
-          name: digests-base-${{ env.PLATFORM_PAIR }}
-          path: ${{ runner.temp }}/digests/base/*
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Upload tmux digest
-        uses: actions/upload-artifact@v6
-        with:
-          name: digests-tmux-${{ env.PLATFORM_PAIR }}
-          path: ${{ runner.temp }}/digests/tmux/*
+          name: digests-${{ matrix.target }}-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
           if-no-files-found: error
           retention-days: 1
 
@@ -141,7 +127,7 @@ jobs:
         id: meta-base
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE_BASE }}
+          images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest,enable=true
 
@@ -149,7 +135,7 @@ jobs:
         id: meta-tmux
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE_TMUX }}
+          images: ghcr.io/${{ github.repository }}-tmux
           tags: |
             type=raw,value=latest,enable=true
 
@@ -157,10 +143,10 @@ jobs:
         working-directory: ${{ runner.temp }}/digests/base
         run: |
           docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.IMAGE_BASE }}@sha256:%s ' *)
+            $(printf 'ghcr.io/${{ github.repository }}@sha256:%s ' *)
 
       - name: Create tmux manifest
         working-directory: ${{ runner.temp }}/digests/tmux
         run: |
           docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.IMAGE_TMUX }}@sha256:%s ' *)
+            $(printf 'ghcr.io/${{ github.repository }}-tmux@sha256:%s ' *)
