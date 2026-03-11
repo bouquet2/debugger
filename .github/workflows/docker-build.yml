@@ -164,9 +164,3 @@ jobs:
         run: |
           docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf '${{ env.IMAGE_TMUX }}@sha256:%s ' *)
-
-      - name: Inspect base image
-        run: docker buildx imagetools inspect ${{ env.IMAGE_BASE }}:latest
-
-      - name: Inspect tmux image
-        run: docker buildx imagetools inspect ${{ env.IMAGE_TMUX }}:latest
